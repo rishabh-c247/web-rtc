@@ -23,7 +23,8 @@ defined('BASEPATH') OR exit('No direct script access allowed');
 | a PHP script and you can easily do that on your own.
 |
 */
-$config['base_url'] = 'http://192.168.1.135/web-rtc/';
+$protocol = ($_SERVER['SERVER_PORT'] == 443 ? 'https://' : 'http://');
+$config['base_url'] = $protocol.$_ENV["DOMAIN"];
 
 /*
 |--------------------------------------------------------------------------
@@ -35,7 +36,7 @@ $config['base_url'] = 'http://192.168.1.135/web-rtc/';
 | variable so that it is blank.
 |
 */
-$config['index_page'] = 'index.php';
+$config['index_page'] = '';
 
 /*
 |--------------------------------------------------------------------------
@@ -326,7 +327,7 @@ $config['cache_query_string'] = FALSE;
 | https://codeigniter.com/userguide3/libraries/encryption.html
 |
 */
-$config['encryption_key'] = '';
+$config['encryption_key'] = $_ENV['CONFIG_encryption_key']?$_ENV['CONFIG_encryption_key']:'12345';
 
 /*
 |--------------------------------------------------------------------------
@@ -383,14 +384,14 @@ $config['encryption_key'] = '';
 | except for 'cookie_prefix' and 'cookie_httponly', which are ignored here.
 |
 */
-$config['sess_driver'] = 'files';
-$config['sess_cookie_name'] = 'ci_session';
-$config['sess_samesite'] = 'Lax';
-$config['sess_expiration'] = 7200;
-$config['sess_save_path'] = NULL;
-$config['sess_match_ip'] = FALSE;
-$config['sess_time_to_update'] = 300;
-$config['sess_regenerate_destroy'] = FALSE;
+$config['sess_driver'] = $_ENV['SESS_DRIVER']?$_ENV['SESS_DRIVER']:'files';
+$config['sess_cookie_name'] = !empty($_ENV['SESS_COOKIE_NAME'])?$_ENV['SESS_COOKIE_NAME']:'ci_session';
+$config['sess_expiration'] = !empty($_ENV['SESS_EXPIRATION'])?$_ENV['SESS_EXPIRATION']:7200;
+$config['sess_save_path'] = !empty($_ENV['SESS_SAVE_PATH'])?$_ENV['SESS_SAVE_PATH']:'/tmp';
+$config['sess_match_ip'] = $_ENV['SESS_MATCH_IP']?$_ENV['SESS_MATCH_IP']:FALSE; 
+$config['sess_time_to_update'] = !empty($_ENV['SESS_TIME_TO_UPDATE'])?$_ENV['SESS_TIME_TO_UPDATE']:300;
+$config['sess_regenerate_destroy'] = $_ENV['SESS_REGENERATE_DESTROY']?$_ENV['SESS_REGENERATE_DESTROY']:FALSE;
+$config['sess_samesite'] = !empty($_ENV['SESS_SAMESITE']) ? $_ENV['SESS_SAMESITE'] : 'Lax';
 
 /*
 |--------------------------------------------------------------------------

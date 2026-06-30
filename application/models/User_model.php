@@ -3,6 +3,9 @@ defined('BASEPATH') OR exit('No direct script access allowed');
 
 class User_model extends CI_Model {
 
+    /** Seconds without a heartbeat before a user is marked offline. */
+    const ONLINE_TIMEOUT_SECONDS = 3;
+
     public function find_or_create($first_name, $last_name)
     {
         $this->db->where('first_name', $first_name);
@@ -27,10 +30,19 @@ class User_model extends CI_Model {
 
     public function get_other_users($exclude_id)
     {
+        $this->mark_stale_offline();
+
         $this->db->select('id, first_name, last_name, is_online, last_seen');
         $this->db->where('id !=', $exclude_id);
         $this->db->order_by('first_name');
-        return $this->db->get('users')->result();
+        $users = $this->db->get('users')->result();
+
+        foreach ($users as $user) {
+            $user->id         = (int) $user->id;
+            $user->is_online  = (int) $user->is_online;
+        }
+
+        return $users;
     }
 
     public function set_online($id, $online = true)
@@ -48,8 +60,20 @@ class User_model extends CI_Model {
             'last_seen' => date('Y-m-d H:i:s'),
         ], ['id' => $id]);
 
-        // Mark users offline if last_seen older than 90 seconds
-        $this->db->where('last_seen <', date('Y-m-d H:i:s', time() - 90));
+        $this->mark_stale_offline();
+    }
+
+    public function go_offline($id)
+    {
+        $this->db->update('users', [
+            'is_online' => 0,
+            'last_seen' => date('Y-m-d H:i:s'),
+        ], ['id' => $id]);
+    }
+
+    public function mark_stale_offline()
+    {
+        $this->db->where('last_seen <', date('Y-m-d H:i:s', time() - self::ONLINE_TIMEOUT_SECONDS));
         $this->db->where('is_online', 1);
         $this->db->update('users', ['is_online' => 0]);
     }

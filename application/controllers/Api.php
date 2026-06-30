@@ -80,6 +80,7 @@ class Api extends CI_Controller {
     public function conversations()
     {
         $this->_require_auth();
+        $this->User_model->mark_stale_offline();
         $list = $this->Conversation_model->get_user_conversations($this->_me());
         $this->_json(['conversations' => $list]);
     }
@@ -298,6 +299,7 @@ class Api extends CI_Controller {
 
             // ---- poll (receiver checks for incoming live transmission) ----
             case 'poll':
+                $this->User_model->mark_stale_offline();
                 $incoming = $this->Transmission_model->get_incoming_for_receiver($me);
                 $pending  = $this->Transmission_model->get_pending_for_receiver($me);
                 $this->_json([
@@ -383,12 +385,23 @@ class Api extends CI_Controller {
 
     // ----------------------------------------------------------------
     // POST /api/heartbeat
-    // Client pings every 30 s to keep is_online = 1.
+    // Client pings every ~1 s while the tab is active to keep is_online = 1.
     // ----------------------------------------------------------------
     public function heartbeat()
     {
         $this->_require_auth();
         $this->User_model->heartbeat($this->_me());
+        $this->_json(['ok' => true]);
+    }
+
+    // ----------------------------------------------------------------
+    // POST /api/offline
+    // Immediate offline signal (tab close, hide, or network loss).
+    // ----------------------------------------------------------------
+    public function offline()
+    {
+        $this->_require_auth();
+        $this->User_model->go_offline($this->_me());
         $this->_json(['ok' => true]);
     }
 

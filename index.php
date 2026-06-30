@@ -1,4 +1,8 @@
 <?php
+
+require_once 'environment.php';
+$__DotEnvironment = new DotEnvironment(".env");
+
 /**
  * CodeIgniter
  *

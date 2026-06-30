@@ -32,6 +32,7 @@ $route['api/signaling/(:any)'] = 'api/signaling/$1';
 
 // API — Heartbeat (online presence)
 $route['api/heartbeat'] = 'api/heartbeat';
+$route['api/offline']   = 'api/offline';
 
 // CLI-only migration runner (web access returns 404)
 $route['migrate']          = 'migrate/index';

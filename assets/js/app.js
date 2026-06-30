@@ -21,6 +21,10 @@ let cardRefreshInterval  = null;
 let incomingPollInterval = null;
 let txPopupTimer         = null;
 let txPopupStartedAt     = null;
+let heartbeatInterval    = null;
+
+const HEARTBEAT_MS        = 1000;
+const PRESENCE_REFRESH_MS = 2000;
 
 // ── DOM refs
 const btnTransmit   = document.getElementById('btn-transmit');
@@ -46,6 +50,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadConversations();
     startIncomingPoll();
     startHeartbeat();
+    startPresenceRefresh();
     wireNewConvModal();
     wireVoiceCardAudioBehavior();
 });
@@ -80,6 +85,11 @@ function unlockAutoplay () {
 async function loadConversations () {
     const data = await apiGet('conversations');
     renderConvList(data.conversations || []);
+    updatePeerStatus([]);
+}
+
+function isUserOnline (value) {
+    return Number(value) === 1;
 }
 
 function renderConvList (convs) {
@@ -99,9 +109,9 @@ function renderConvList (convs) {
             <div class="avatar">${initials(c.first_name, c.last_name)}</div>
             <div class="info">
                 <div class="name">${esc(c.first_name)} ${esc(c.last_name)}</div>
-                <div class="sub">${c.is_online ? 'Online' : 'Offline'}</div>
+                <div class="sub">${isUserOnline(c.is_online) ? 'Online' : 'Offline'}</div>
             </div>
-            <span class="${c.is_online ? 'online-dot' : 'offline-dot'} status-dot"></span>
+            <span class="${isUserOnline(c.is_online) ? 'online-dot' : 'offline-dot'} status-dot"></span>
         </div>
     `).join('');
 
@@ -139,8 +149,6 @@ function selectConversation (convId, otherId, otherName) {
     if (cardRefreshInterval) clearInterval(cardRefreshInterval);
     cardRefreshInterval = setInterval(() => {
         loadVoiceCards(convId);
-        // Also refresh peer online status in sidebar
-        loadConversations();
     }, 3000);
 }
 
@@ -561,46 +569,58 @@ function wireNewConvModal () {
             <div class="spinner-border spinner-border-sm me-2"></div> Loading users…
         </div>`;
         modal.show();
+        await renderUserPicker(picker);
+    });
+}
 
-        const data  = await apiGet('users');
-        const users = data.users || [];
+async function renderUserPicker (pickerEl) {
+    const picker = pickerEl || document.getElementById('user-picker');
+    if (!picker) return;
 
-        if (!users.length) {
-            picker.innerHTML = `<div class="text-center py-3" style="opacity:0.4;">
-                No other users have joined yet.
-            </div>`;
-            return;
-        }
+    const data  = await apiGet('users');
+    const users = data.users || [];
 
-        picker.innerHTML = users.map(u => `
-            <div class="user-pick-item"
-                 data-user-id="${u.id}"
-                 data-name="${esc(u.first_name + ' ' + u.last_name)}">
-                <div class="user-pick-avatar">${initials(u.first_name, u.last_name)}</div>
-                <div>
-                    <div style="font-weight:600;">${esc(u.first_name)} ${esc(u.last_name)}</div>
-                    <small style="color:var(--text-muted);">
-                        ${u.is_online
-                            ? '<span class="online-dot me-1"></span>Online'
-                            : '<span class="offline-dot me-1"></span>Offline'}
-                    </small>
-                </div>
+    if (!users.length) {
+        picker.innerHTML = `<div class="text-center py-3" style="opacity:0.4;">
+            No other users have joined yet.
+        </div>`;
+        return;
+    }
+
+    picker.innerHTML = users.map(u => `
+        <div class="user-pick-item"
+             data-user-id="${u.id}"
+             data-name="${esc(u.first_name + ' ' + u.last_name)}">
+            <div class="user-pick-avatar">${initials(u.first_name, u.last_name)}</div>
+            <div>
+                <div style="font-weight:600;">${esc(u.first_name)} ${esc(u.last_name)}</div>
+                <small style="color:var(--text-muted);">
+                    ${isUserOnline(u.is_online)
+                        ? '<span class="online-dot me-1"></span>Online'
+                        : '<span class="offline-dot me-1"></span>Offline'}
+                </small>
             </div>
-        `).join('');
+        </div>
+    `).join('');
 
-        picker.querySelectorAll('.user-pick-item').forEach(el => {
-            el.addEventListener('click', async () => {
-                const otherId   = parseInt(el.dataset.userId);
-                const otherName = el.dataset.name;
-                modal.hide();
-                const res = await api('conversations/create', { other_user_id: otherId });
-                if (res.success) {
-                    await loadConversations();
-                    selectConversation(res.conversation_id, otherId, otherName);
-                }
-            });
+    picker.querySelectorAll('.user-pick-item').forEach(el => {
+        el.addEventListener('click', async () => {
+            const otherId   = parseInt(el.dataset.userId);
+            const otherName = el.dataset.name;
+            bootstrap.Modal.getInstance(document.getElementById('modal-new-conv')).hide();
+            const res = await api('conversations/create', { other_user_id: otherId });
+            if (res.success) {
+                await loadConversations();
+                selectConversation(res.conversation_id, otherId, otherName);
+            }
         });
     });
+}
+
+async function refreshUserPickerIfOpen () {
+    const modal = document.getElementById('modal-new-conv');
+    if (!modal || !modal.classList.contains('show')) return;
+    await renderUserPicker();
 }
 
 if (btnPopupStop) {
@@ -612,11 +632,34 @@ if (btnPopupStop) {
 }
 
 // ================================================================
-// Heartbeat (keep is_online alive)
+// Heartbeat (keep is_online alive while the page is open)
 // ================================================================
-function startHeartbeat () {
+function sendHeartbeat () {
     api('heartbeat', {}).catch(() => {});
-    setInterval(() => api('heartbeat', {}).catch(() => {}), 30000);
+}
+
+function sendOfflineBeacon () {
+    const blob = new Blob(['{}'], { type: 'application/json' });
+    navigator.sendBeacon(BASE_URL + 'api/offline', blob);
+}
+
+function startHeartbeat () {
+    sendHeartbeat();
+    heartbeatInterval = setInterval(sendHeartbeat, HEARTBEAT_MS);
+
+    // Mark offline only when the page is actually closed — not on tab/window minimize or switch.
+    window.addEventListener('pagehide', (e) => {
+        if (!e.persisted) {
+            sendOfflineBeacon();
+        }
+    });
+}
+
+function startPresenceRefresh () {
+    setInterval(() => {
+        loadConversations();
+        refreshUserPickerIfOpen();
+    }, PRESENCE_REFRESH_MS);
 }
 
 // ================================================================

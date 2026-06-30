@@ -60,7 +60,15 @@ class Conversation_model extends CI_Model {
             JOIN users u                  ON u.id = cm2.user_id
             ORDER BY c.created_at DESC
         ";
-        return $this->db->query($sql, [(int) $user_id, (int) $user_id])->result();
+        $rows = $this->db->query($sql, [(int) $user_id, (int) $user_id])->result();
+
+        foreach ($rows as $row) {
+            $row->id            = (int) $row->id;
+            $row->other_user_id = (int) $row->other_user_id;
+            $row->is_online     = (int) $row->is_online;
+        }
+
+        return $rows;
     }
 
     /**

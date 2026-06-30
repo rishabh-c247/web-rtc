@@ -24,7 +24,7 @@ defined('BASEPATH') OR exit('No direct script access allowed');
 |
 */
 $protocol = ($_SERVER['SERVER_PORT'] == 443 ? 'https://' : 'http://');
-$config['base_url'] = $protocol.$_ENV["DOMAIN"];
+$config['base_url'] = 'https://'.$_ENV["DOMAIN"];
 
 /*
 |--------------------------------------------------------------------------

@@ -59,24 +59,38 @@ document.addEventListener('DOMContentLoaded', () => {
 // Autoplay unlock
 // ================================================================
 function unlockAutoplay () {
-    const banner = document.getElementById('autoplay-banner');
-    if (!banner) return;
+    const banner    = document.getElementById('autoplay-banner');
+    const audio     = document.getElementById('remote-audio');
+    if (!audio) return;
 
-    // Show the banner so the user knows they should click
-    banner.classList.remove('d-none');
+    // The login form submission is a user gesture on the same origin.
+    // Browsers carry that permission forward through same-origin navigation,
+    // so audio.play() succeeds immediately — no click required.
+    // We attempt the silent unlock straight away and only surface the banner
+    // as a fallback for browsers that still block it.
+    const silentSrc = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+    audio.src = silentSrc;
+    audio.play()
+        .then(() => {
+            audio.pause();
+            audio.src = '';
+            // Unlocked silently — banner stays hidden.
+        })
+        .catch(() => {
+            // Browser blocked the attempt (strict policy or no prior gesture).
+            // Fall back to the click-to-unlock banner.
+            if (banner) banner.classList.remove('d-none');
 
-    const unlock = () => {
-        const audio = document.getElementById('remote-audio');
-        if (audio) {
-            // Play + immediately pause a silent snippet to unlock autoplay
-            audio.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
-            audio.play().then(() => { audio.pause(); audio.src = ''; }).catch(() => {});
-        }
-        banner.classList.add('d-none');
-        document.removeEventListener('click', unlock);
-    };
-    document.addEventListener('click', unlock, { once: true });
-    banner.addEventListener('click', unlock, { once: true });
+            const unlock = () => {
+                audio.src = silentSrc;
+                audio.play()
+                    .then(() => { audio.pause(); audio.src = ''; })
+                    .catch(() => {});
+                if (banner) banner.classList.add('d-none');
+            };
+            document.addEventListener('click', unlock, { once: true });
+            if (banner) banner.addEventListener('click', unlock, { once: true });
+        });
 }
 
 // ================================================================
@@ -647,7 +661,19 @@ function startHeartbeat () {
     sendHeartbeat();
     heartbeatInterval = setInterval(sendHeartbeat, HEARTBEAT_MS);
 
-    // Mark offline only when the page is actually closed — not on tab/window minimize or switch.
+    // Browsers throttle setInterval in background/minimized tabs (sometimes to
+    // once per minute). When the tab regains focus we tear down the stale,
+    // out-of-sync interval and restart it immediately so last_seen is updated
+    // the instant the user returns — with no waiting for the next throttled tick.
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+            clearInterval(heartbeatInterval);
+            sendHeartbeat();
+            heartbeatInterval = setInterval(sendHeartbeat, HEARTBEAT_MS);
+        }
+    });
+
+    // Mark offline only when the page is actually closed or navigated away from.
     window.addEventListener('pagehide', (e) => {
         if (!e.persisted) {
             sendOfflineBeacon();

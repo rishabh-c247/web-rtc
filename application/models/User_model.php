@@ -3,8 +3,10 @@ defined('BASEPATH') OR exit('No direct script access allowed');
 
 class User_model extends CI_Model {
 
-    /** Seconds without a heartbeat before a user is marked offline. */
-    const ONLINE_TIMEOUT_SECONDS = 3;
+    /** Seconds without a heartbeat before a user is marked offline.
+     *  15 s gives enough headroom for browser tab-switch latency and the
+     *  brief gap before visibilitychange restarts the heartbeat interval. */
+    const ONLINE_TIMEOUT_SECONDS = 15;
 
     /**
      * Find a user by email or create one.

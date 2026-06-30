@@ -14,6 +14,7 @@ USE web_rtc;
 -- ------------------------------------------------------------
 CREATE TABLE users (
     id            INT UNSIGNED    NOT NULL AUTO_INCREMENT,
+    email         VARCHAR(255)    NOT NULL,
     first_name    VARCHAR(100)    NOT NULL,
     last_name     VARCHAR(100)    NOT NULL,
     session_token VARCHAR(255)    DEFAULT NULL,
@@ -21,8 +22,9 @@ CREATE TABLE users (
     last_seen     DATETIME        DEFAULT NULL,
     created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    KEY idx_session (session_token),
-    KEY idx_online  (is_online)
+    UNIQUE KEY idx_email    (email),
+    KEY        idx_session  (session_token),
+    KEY        idx_online   (is_online)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ------------------------------------------------------------

@@ -406,6 +406,10 @@ async function api (path, body = {}) {
         },
         body: JSON.stringify(body),
     });
+    if (res.status === 401) {
+        window.location.href = BASE_URL + 'auth';
+        return {};
+    }
     return res.json();
 }
 
@@ -414,5 +418,9 @@ async function apiGet (path) {
         method:  'GET',
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
     });
+    if (res.status === 401) {
+        window.location.href = BASE_URL + 'auth';
+        return {};
+    }
     return res.json();
 }

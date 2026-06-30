@@ -6,9 +6,11 @@ $route['404_override']       = '';
 $route['translate_uri_dashes'] = FALSE;
 
 // Auth
-$route['auth']        = 'auth/index';
-$route['auth/login']  = 'auth/login';
-$route['auth/logout'] = 'auth/logout';
+$route['auth']                = 'auth/index';
+$route['auth/login']          = 'auth/login';
+$route['auth/logout']         = 'auth/logout';
+$route['auth/confirm']        = 'auth/confirm';
+$route['auth/confirm/cancel'] = 'auth/confirm_cancel';
 
 // Dashboard
 $route['dashboard'] = 'dashboard/index';

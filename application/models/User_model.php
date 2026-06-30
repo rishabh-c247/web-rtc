@@ -6,21 +6,76 @@ class User_model extends CI_Model {
     /** Seconds without a heartbeat before a user is marked offline. */
     const ONLINE_TIMEOUT_SECONDS = 3;
 
-    public function find_or_create($first_name, $last_name)
+    /**
+     * Find a user by email or create one.
+     * Names are updated on every login so corrections are reflected immediately.
+     * Returns the user's id.
+     */
+    public function find_or_create($email, $first_name, $last_name)
     {
-        $this->db->where('first_name', $first_name);
-        $this->db->where('last_name',  $last_name);
-        $row = $this->db->get('users')->row();
+        $row = $this->db->get_where('users', ['email' => $email])->row();
 
         if ($row) {
-            return $row->id;
+            if ($row->first_name !== $first_name || $row->last_name !== $last_name) {
+                $this->db->update('users', [
+                    'first_name' => $first_name,
+                    'last_name'  => $last_name,
+                ], ['id' => $row->id]);
+            }
+            return (int) $row->id;
         }
 
         $this->db->insert('users', [
+            'email'      => $email,
             'first_name' => $first_name,
             'last_name'  => $last_name,
         ]);
-        return $this->db->insert_id();
+        return (int) $this->db->insert_id();
+    }
+
+    /**
+     * Generate a new cryptographic session token, persist it, and return it.
+     * Calling this invalidates any token previously held by another device.
+     */
+    public function refresh_session_token($user_id)
+    {
+        $token = bin2hex(random_bytes(32)); // 64-char hex, cryptographically random
+        $this->db->update('users', ['session_token' => $token], ['id' => $user_id]);
+        return $token;
+    }
+
+    /**
+     * Compare the supplied token against the one stored in the DB.
+     * Uses hash_equals to prevent timing-based side-channel leaks.
+     */
+    public function validate_session_token($user_id, $token)
+    {
+        if (empty($token)) {
+            return false;
+        }
+        $row = $this->db->select('session_token')
+                        ->get_where('users', ['id' => $user_id])
+                        ->row();
+        return $row && $row->session_token !== null
+            && hash_equals($row->session_token, $token);
+    }
+
+    /**
+     * Returns true when a non-null session_token exists for the user,
+     * meaning an active session is already open on another device.
+     */
+    public function has_active_session($user_id)
+    {
+        $row = $this->db->select('session_token')
+                        ->get_where('users', ['id' => $user_id])
+                        ->row();
+        return $row && $row->session_token !== null;
+    }
+
+    /** Invalidate the session token on explicit logout. */
+    public function clear_session_token($user_id)
+    {
+        $this->db->update('users', ['session_token' => null], ['id' => $user_id]);
     }
 
     public function get($id)
@@ -38,8 +93,8 @@ class User_model extends CI_Model {
         $users = $this->db->get('users')->result();
 
         foreach ($users as $user) {
-            $user->id         = (int) $user->id;
-            $user->is_online  = (int) $user->is_online;
+            $user->id        = (int) $user->id;
+            $user->is_online = (int) $user->is_online;
         }
 
         return $users;

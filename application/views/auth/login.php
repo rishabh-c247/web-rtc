@@ -60,6 +60,8 @@
             color: #ff8a8a;
             border-radius: 10px;
         }
+        .name-row { display: flex; gap: 0.75rem; }
+        .name-row .mb-3 { flex: 1; }
     </style>
 </head>
 <body>
@@ -79,22 +81,30 @@
 
     <?= form_open('auth/login', ['class' => 'needs-validation', 'novalidate' => '']) ?>
         <div class="mb-3">
-            <label class="form-label">First Name</label>
-            <input type="text" class="form-control" name="first_name"
-                   placeholder="e.g. Alice" required autofocus>
+            <label class="form-label">Email Address</label>
+            <input type="email" class="form-control" name="email"
+                   placeholder="e.g. alice@example.com" required autofocus
+                   autocomplete="email">
         </div>
-        <div class="mb-4">
-            <label class="form-label">Last Name</label>
-            <input type="text" class="form-control" name="last_name"
-                   placeholder="e.g. Smith" required>
+        <div class="name-row">
+            <div class="mb-3">
+                <label class="form-label">First Name</label>
+                <input type="text" class="form-control" name="first_name"
+                       placeholder="Alice" required autocomplete="given-name">
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Last Name</label>
+                <input type="text" class="form-control" name="last_name"
+                       placeholder="Smith" required autocomplete="family-name">
+            </div>
         </div>
-        <button type="submit" class="btn btn-enter btn-primary w-100">
+        <button type="submit" class="btn btn-enter btn-primary w-100 mt-1">
             <i class="bi bi-box-arrow-in-right me-2"></i>Enter Dashboard
         </button>
     <?= form_close() ?>
 
     <p class="text-center mt-3 mb-0" style="font-size:0.78rem;color:rgba(255,255,255,0.35);">
-        No password required — enter your name to join.
+        Your email identifies your account. No password required.
     </p>
 </div>
 </body>

@@ -27,8 +27,17 @@ class Api extends CI_Controller {
 
     private function _require_auth()
     {
-        if (!$this->session->userdata('user_id')) {
+        $user_id = $this->session->userdata('user_id');
+        $token   = $this->session->userdata('session_token');
+
+        if (!$user_id || !$token) {
             $this->_json(['error' => 'Unauthorized'], 401);
+            exit;
+        }
+
+        if (!$this->User_model->validate_session_token($user_id, $token)) {
+            $this->session->sess_destroy();
+            $this->_json(['error' => 'Session expired', 'kicked' => true], 401);
             exit;
         }
     }

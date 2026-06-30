@@ -96,15 +96,44 @@ class Api extends CI_Controller {
             $this->_json(['error' => 'other_user_id required'], 400);
             return;
         }
-
-        $existing = $this->Conversation_model->find_between($this->_me(), $other);
-        if ($existing) {
-            $this->_json(['success' => true, 'conversation_id' => (int) $existing->id]);
+        if ($other === $this->_me()) {
+            $this->_json(['error' => 'Cannot create conversation with yourself'], 400);
             return;
         }
 
-        $id = $this->Conversation_model->create($this->_me(), $other);
-        $this->_json(['success' => true, 'conversation_id' => (int) $id]);
+        // Avoid CI HTML DB error pages for API requests; return JSON instead.
+        $db_debug = $this->db->db_debug;
+        $this->db->db_debug = false;
+        try {
+            $existing = $this->Conversation_model->find_between($this->_me(), $other);
+            $db_err = $this->db->error();
+            if (!empty($db_err['code'])) {
+                $this->_json([
+                    'error' => 'Database error while checking existing conversation',
+                    'details' => $db_err['message'],
+                ], 500);
+                return;
+            }
+
+            if ($existing) {
+                $this->_json(['success' => true, 'conversation_id' => (int) $existing->id]);
+                return;
+            }
+
+            $id = $this->Conversation_model->create($this->_me(), $other);
+            $db_err = $this->db->error();
+            if (!$id || !empty($db_err['code'])) {
+                $this->_json([
+                    'error' => 'Database error while creating conversation',
+                    'details' => $db_err['message'] ?? 'Unknown DB error',
+                ], 500);
+                return;
+            }
+
+            $this->_json(['success' => true, 'conversation_id' => (int) $id]);
+        } finally {
+            $this->db->db_debug = $db_debug;
+        }
     }
 
     // ----------------------------------------------------------------
@@ -165,16 +194,15 @@ class Api extends CI_Controller {
 
                 $tx_id = $this->Transmission_model->create($conv_id, $me, $receiver_id, $is_live);
 
-                if (!$is_live) {
-                    // Receiver is busy — pre-create a disabled pending voice card
-                    $this->Voice_message_model->create([
-                        'transmission_id' => $tx_id,
-                        'conversation_id' => $conv_id,
-                        'sender_id'       => $me,
-                        'receiver_id'     => $receiver_id,
-                        'is_pending'      => 1,
-                    ]);
-                }
+                // Pre-create a pending placeholder card for both live and pending modes.
+                // This gives immediate UX feedback while audio upload is still in progress.
+                $this->Voice_message_model->create([
+                    'transmission_id' => $tx_id,
+                    'conversation_id' => $conv_id,
+                    'sender_id'       => $me,
+                    'receiver_id'     => $receiver_id,
+                    'is_pending'      => 1,
+                ]);
 
                 $this->_json([
                     'success'         => true,
@@ -248,9 +276,12 @@ class Api extends CI_Controller {
 
                 $this->Transmission_model->set_audio($tx_id, $rel_path);
 
-                // For live transmissions: create the voice card now.
-                // For pending (is_live=0): update the existing pending card.
-                if ((int) $tx->is_live === 1) {
+                // Finalise the pending placeholder card.
+                $pending = $this->Voice_message_model->get_by_transmission($tx_id);
+                if ($pending) {
+                    $this->Voice_message_model->finalize($tx_id, $rel_path, $duration);
+                } else {
+                    // Backward-compatible fallback if a placeholder was not created.
                     $this->Voice_message_model->create([
                         'transmission_id' => $tx_id,
                         'conversation_id' => (int) $tx->conversation_id,
@@ -260,9 +291,6 @@ class Api extends CI_Controller {
                         'duration'        => $duration,
                         'is_pending'      => 0,
                     ]);
-                } else {
-                    // Finalise the pending placeholder card
-                    $this->Voice_message_model->finalize($tx_id, $rel_path, $duration);
                 }
 
                 $this->_json(['success' => true, 'file_path' => $rel_path]);
@@ -390,10 +418,57 @@ class Api extends CI_Controller {
             'wav'   => 'audio/wav',
             default => 'application/octet-stream',
         };
+        $size = filesize($path);
+        $start = 0;
+        $end   = $size - 1;
 
-        header('Content-Type: '  . $mime);
-        header('Content-Length: ' . filesize($path));
+        header('Content-Type: ' . $mime);
         header('Accept-Ranges: bytes');
+
+        // Proper byte-range handling for HTML audio seeking/streaming.
+        $range = $this->input->server('HTTP_RANGE');
+        if ($range && preg_match('/bytes=(\d*)-(\d*)/i', $range, $matches)) {
+            if ($matches[1] !== '') {
+                $start = (int) $matches[1];
+            }
+            if ($matches[2] !== '') {
+                $end = (int) $matches[2];
+            }
+            if ($start > $end || $start >= $size) {
+                header('HTTP/1.1 416 Range Not Satisfiable');
+                header('Content-Range: bytes */' . $size);
+                exit;
+            }
+            if ($end >= $size) {
+                $end = $size - 1;
+            }
+
+            $length = $end - $start + 1;
+            header('HTTP/1.1 206 Partial Content');
+            header('Content-Range: bytes ' . $start . '-' . $end . '/' . $size);
+            header('Content-Length: ' . $length);
+
+            $fp = fopen($path, 'rb');
+            if ($fp === false) {
+                show_404();
+                return;
+            }
+            fseek($fp, $start);
+            $remaining = $length;
+            while ($remaining > 0 && !feof($fp)) {
+                $read = min(8192, $remaining);
+                $chunk = fread($fp, $read);
+                if ($chunk === false || $chunk === '') {
+                    break;
+                }
+                echo $chunk;
+                $remaining -= strlen($chunk);
+            }
+            fclose($fp);
+            exit;
+        }
+
+        header('Content-Length: ' . $size);
         readfile($path);
         exit;
     }

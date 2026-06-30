@@ -35,7 +35,10 @@ class Conversation_model extends CI_Model {
         ]);
 
         $this->db->trans_complete();
-        return $conv_id;
+        if ($this->db->trans_status() === false) {
+            return false;
+        }
+        return (int) $conv_id;
     }
 
     /**

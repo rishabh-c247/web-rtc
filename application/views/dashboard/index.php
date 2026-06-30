@@ -86,6 +86,29 @@
     </main>
 </div>
 
+<!-- Floating transmission popup -->
+<div id="tx-popup" class="tx-popup d-none">
+    <div class="tx-popup-head">
+        <div class="tx-popup-title-wrap">
+            <div class="tx-popup-orb">
+                <i class="bi bi-mic-fill"></i>
+            </div>
+            <div>
+                <div class="tx-popup-title">Voice Transmission</div>
+                <div id="tx-popup-mode" class="tx-popup-mode">Live</div>
+            </div>
+        </div>
+        <div id="tx-popup-timer" class="tx-popup-timer">00:00</div>
+    </div>
+    <div id="tx-popup-status" class="tx-popup-status">Initializing…</div>
+    <div class="tx-popup-wave">
+        <span></span><span></span><span></span><span></span><span></span>
+    </div>
+    <button id="btn-popup-stop" class="tx-popup-stop">
+        <i class="bi bi-stop-fill me-1"></i> Stop & Save
+    </button>
+</div>
+
 <!-- ===== NEW CONVERSATION MODAL ===== -->
 <div class="modal fade" id="modal-new-conv" tabindex="-1">
     <div class="modal-dialog modal-dialog-centered">

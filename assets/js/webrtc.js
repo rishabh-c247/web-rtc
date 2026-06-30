@@ -47,6 +47,10 @@ class VoiceTransmission {
             return { success: false, message: 'Already in a transmission.' };
         }
 
+        // Reset signaling state for a fresh transmission session.
+        this._remoteDescSet = false;
+        this._icePending    = [];
+
         // 1. Ask server to create the transmission record
         const res = await api('transmission/start', {
             conversation_id: conversationId,
@@ -58,7 +62,7 @@ class VoiceTransmission {
 
         this.transmissionId = res.transmission_id;
         this.isTransmitting = true;
-        this.startTime      = Date.now();
+        this.startTime      = null;
 
         // 2. Capture microphone
         try {
@@ -208,17 +212,22 @@ class VoiceTransmission {
 
     _startRecording () {
         this.audioChunks = [];
-        const mimeType   = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-                           ? 'audio/webm;codecs=opus'
-                           : (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
-                              ? 'audio/ogg;codecs=opus'
+        // Prefer OGG Opus when available; some browsers produce more reliable
+        // duration/playback metadata for saved voice notes than WebM.
+        const mimeType   = MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
+                           ? 'audio/ogg;codecs=opus'
+                           : (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+                              ? 'audio/webm;codecs=opus'
                               : '');
         const opts = mimeType ? { mimeType } : {};
         this.mediaRecorder = new MediaRecorder(this.localStream, opts);
         this.mediaRecorder.ondataavailable = e => {
             if (e.data && e.data.size > 0) this.audioChunks.push(e.data);
         };
-        this.mediaRecorder.start(200);
+        // Duration should reflect actual recording time, not setup time.
+        this.startTime = Date.now();
+        // Record as a single final blob to avoid segmented WebM playback truncation.
+        this.mediaRecorder.start();
     }
 
     async _stopRecordingAndUpload () {
@@ -227,8 +236,11 @@ class VoiceTransmission {
         }
         return new Promise(resolve => {
             this.mediaRecorder.onstop = async () => {
-                const duration = Math.round((Date.now() - this.startTime) / 1000);
-                const blob     = new Blob(this.audioChunks, { type: this.mediaRecorder.mimeType || 'audio/webm' });
+                const startedAt = this.startTime || Date.now();
+                const duration  = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+                // Snapshot chunks in case state mutates before upload starts.
+                const chunks   = this.audioChunks.slice();
+                const blob     = new Blob(chunks, { type: this.mediaRecorder.mimeType || 'audio/webm' });
                 const ext      = (this.mediaRecorder.mimeType || '').includes('ogg') ? 'ogg' : 'webm';
 
                 const form = new FormData();
@@ -247,6 +259,10 @@ class VoiceTransmission {
                 }
                 resolve();
             };
+            // Flush buffered data right before stopping.
+            if (typeof this.mediaRecorder.requestData === 'function') {
+                try { this.mediaRecorder.requestData(); } catch {}
+            }
             this.mediaRecorder.stop();
         });
     }
@@ -309,7 +325,7 @@ class VoiceTransmission {
 
             // ----- Both sides receive ICE candidates -----
             case 'ice_candidate':
-                if (!this._remoteDescSet) {
+                if (!this._remoteDescSet || !this.pc?.remoteDescription) {
                     this._icePending.push(payload);
                 } else {
                     await this._addIce(payload);
@@ -331,6 +347,7 @@ class VoiceTransmission {
     }
 
     async _flushIcePending () {
+        if (!this.pc?.remoteDescription) return;
         while (this._icePending.length > 0) {
             await this._addIce(this._icePending.shift());
         }
@@ -364,6 +381,8 @@ class VoiceTransmission {
             this.localStream.getTracks().forEach(t => t.stop());
             this.localStream = null;
         }
+        this._remoteDescSet = false;
+        this._icePending    = [];
     }
 
     async _abortTransmission () {

@@ -50,6 +50,18 @@
             </div>
         </div>
 
+        <div id="sidebar-hint" class="sidebar-hint d-none">
+            <i class="bi bi-hand-index-thumb"></i>
+            Tap a conversation to review messages and transmit voice
+        </div>
+
+        <div id="resume-conv-bar" class="resume-conv-bar d-none">
+            <button type="button" class="btn-resume-conv" id="btn-resume-conv">
+                <i class="bi bi-mic-fill"></i>
+                Open <span id="resume-conv-name">conversation</span>
+            </button>
+        </div>
+
         <div class="sidebar-footer">
             <a href="<?= site_url('auth/logout') ?>" class="btn-logout">
                 <i class="bi bi-box-arrow-right me-1"></i> Logout

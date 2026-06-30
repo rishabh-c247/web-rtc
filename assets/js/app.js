@@ -50,16 +50,49 @@ const btnPopupStop  = document.getElementById('btn-popup-stop');
 const txPopupModeEl = document.getElementById('tx-popup-mode');
 const appShell      = document.getElementById('app-shell');
 const btnMobileBack = document.getElementById('btn-mobile-back');
+const sidebarHint   = document.getElementById('sidebar-hint');
+const resumeConvBar = document.getElementById('resume-conv-bar');
+const btnResumeConv = document.getElementById('btn-resume-conv');
+const resumeConvName= document.getElementById('resume-conv-name');
 
 function wireMobileNav () {
-    if (!btnMobileBack || !appShell) return;
-    btnMobileBack.addEventListener('click', () => {
-        appShell.classList.remove('conv-open');
-    });
+    if (!appShell) return;
+
+    if (btnMobileBack) {
+        btnMobileBack.addEventListener('click', () => {
+            appShell.classList.remove('conv-open');
+            updateMobileChrome();
+        });
+    }
+
+    if (btnResumeConv) {
+        btnResumeConv.addEventListener('click', () => {
+            openConvPanel();
+            updateMobileChrome();
+        });
+    }
 }
 
 function openConvPanel () {
     if (appShell) appShell.classList.add('conv-open');
+    updateMobileChrome();
+}
+
+function updateMobileChrome () {
+    const isMobile  = window.matchMedia('(max-width: 767.98px)').matches;
+    const hasConvs  = convList.querySelectorAll('.conv-item').length > 0;
+    const isConvOpen = appShell && appShell.classList.contains('conv-open');
+
+    if (sidebarHint) {
+        sidebarHint.classList.toggle('d-none', !isMobile || !hasConvs || isConvOpen);
+    }
+    if (resumeConvBar) {
+        resumeConvBar.classList.toggle('d-none', !isMobile || !activeConvId || isConvOpen);
+    }
+    if (resumeConvName && convPeerName) {
+        const name = convPeerName.textContent;
+        if (name && name !== '—') resumeConvName.textContent = name;
+    }
 }
 
 // ================================================================
@@ -72,6 +105,7 @@ document.addEventListener('DOMContentLoaded', () => {
     wireVoiceCardAudioBehavior();
     wireMobileNav();
     initWebSocket();           // replaces startHeartbeat + startIncomingPoll + startPresenceRefresh
+    window.addEventListener('resize', updateMobileChrome);
 });
 
 // ================================================================
@@ -394,6 +428,7 @@ function renderConvList (convs) {
                 <i class="bi bi-chat-dots icon-muted"></i>
                 <div class="mt-2 text-faint">No conversations yet</div>
             </div>`;
+        updateMobileChrome();
         return;
     }
     convList.innerHTML = convs.map(c => `
@@ -407,6 +442,7 @@ function renderConvList (convs) {
                 <div class="sub">${isUserOnline(c.is_online) ? 'Online' : 'Offline'}</div>
             </div>
             <span class="${isUserOnline(c.is_online) ? 'online-dot' : 'offline-dot'} status-dot"></span>
+            <i class="bi bi-chevron-right conv-chevron" aria-hidden="true"></i>
         </div>
     `).join('');
 
@@ -417,6 +453,7 @@ function renderConvList (convs) {
             el.dataset.otherName
         ));
     });
+    updateMobileChrome();
 }
 
 function selectConversation (convId, otherId, otherName) {
@@ -448,6 +485,8 @@ function selectConversation (convId, otherId, otherName) {
             convPeerStatus.textContent = sub ? sub.textContent : '';
         }
     });
+
+    updateMobileChrome();
 }
 
 // ================================================================

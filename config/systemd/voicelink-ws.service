@@ -1,0 +1,32 @@
+[Unit]
+Description=VoiceLink WebSocket Server (Ratchet)
+Documentation=https://github.com/cboden/ratchet
+After=network.target mysql.service
+Wants=mysql.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/html/web-rtc
+
+# Entry point
+ExecStart=/usr/bin/php /var/www/html/web-rtc/bin/websocket-server.php
+
+# Restart on crash — React event loops should never exit in normal operation
+Restart=always
+RestartSec=5
+
+# Logging — systemd captures stdout/stderr; use journalctl -u voicelink-ws
+StandardOutput=journal
+StandardError=journal
+
+# Environment — override individual .env values if needed
+# Environment=WS_PORT=8080
+# Environment=WS_ADMIN_PORT=8081
+
+# Limits
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

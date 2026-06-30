@@ -6,6 +6,12 @@ defined('BASEPATH') OR exit('No direct script access allowed');
  *
  * Every method returns JSON. All endpoints require an authenticated session
  * except `serve_voice` (which double-checks membership via DB).
+ *
+ * WebSocket integration:
+ *   This controller calls _ws_push() after state-changing actions so the
+ *   WebSocket server can immediately push events to connected clients.
+ *   If the WS server is not running, _ws_push() fails silently — the
+ *   client falls back to its HTTP polling path automatically.
  */
 class Api extends CI_Controller {
 
@@ -69,6 +75,39 @@ class Api extends CI_Controller {
             return $decoded[$key] ?? null;
         }
         return $decoded;
+    }
+
+    /**
+     * Push an event to a connected WebSocket client via the WS server's
+     * internal admin HTTP endpoint.
+     *
+     * This is a fire-and-forget call with a 500 ms timeout.  If the WS
+     * server is not running the client falls back to HTTP polling gracefully.
+     *
+     * @param int    $to_user_id  Target user ID
+     * @param string $event       Event name (e.g. 'transmission_incoming')
+     * @param array  $data        Payload sent as the event's data property
+     */
+    private function _ws_push(int $to_user_id, string $event, array $data): void
+    {
+        $port    = (int) (getenv('WS_ADMIN_PORT') ?: 8081);
+        $url     = "http://127.0.0.1:{$port}/internal/push";
+        $payload = json_encode([
+            'event'      => $event,
+            'to_user_id' => $to_user_id,
+            'data'       => $data,
+        ]);
+        $ctx = stream_context_create([
+            'http' => [
+                'method'         => 'POST',
+                'header'         => "Content-Type: application/json\r\nContent-Length: " . strlen($payload) . "\r\n",
+                'content'        => $payload,
+                'timeout'        => 0.5,
+                'ignore_errors'  => true,
+            ],
+        ]);
+        // Suppress warnings — failure is expected when WS server is not running
+        @file_get_contents($url, false, $ctx);
     }
 
     // ----------------------------------------------------------------
@@ -175,6 +214,7 @@ class Api extends CI_Controller {
     // ----------------------------------------------------------------
     // POST /api/transmission/poll
     //   Receiver polls to detect an incoming live transmission.
+    //   Kept as HTTP fallback for when the WS server is unavailable.
     // ----------------------------------------------------------------
     public function transmission($action = '')
     {
@@ -214,6 +254,32 @@ class Api extends CI_Controller {
                     'is_pending'      => 1,
                 ]);
 
+                // Push real-time notification to receiver via WebSocket.
+                // For live transmissions: triggers WebRTC peer connection setup on receiver.
+                // For pending: triggers UI indication of incoming-when-free.
+                if ($is_live) {
+                    $sender = $this->User_model->get($me);
+                    $this->_ws_push($receiver_id, 'transmission_incoming', [
+                        'id'              => $tx_id,
+                        'conversation_id' => $conv_id,
+                        'sender_id'       => $me,
+                        'receiver_id'     => $receiver_id,
+                        'status'          => 'active',
+                        'is_live'         => 1,
+                        'sender_first'    => $sender->first_name ?? '',
+                        'sender_last'     => $sender->last_name  ?? '',
+                    ]);
+                } else {
+                    $sender = $this->User_model->get($me);
+                    $this->_ws_push($receiver_id, 'transmission_pending', [
+                        'id'              => $tx_id,
+                        'conversation_id' => $conv_id,
+                        'sender_id'       => $me,
+                        'sender_first'    => $sender->first_name ?? '',
+                        'sender_last'     => $sender->last_name  ?? '',
+                    ]);
+                }
+
                 $this->_json([
                     'success'         => true,
                     'transmission_id' => $tx_id,
@@ -234,12 +300,23 @@ class Api extends CI_Controller {
                     return;
                 }
                 $this->Transmission_model->complete($tx_id);
-                // Send hang_up signal to receiver (live transmissions only)
+
                 if ((int) $tx->is_live === 1) {
+                    $receiver_id = (int) $tx->receiver_id;
+
+                    // Push hang_up via WebSocket first (instant delivery)
+                    $this->_ws_push($receiver_id, 'signaling', [
+                        'transmission_id' => $tx_id,
+                        'from_user_id'    => $me,
+                        'type'            => 'hang_up',
+                        'payload'         => '{}',
+                    ]);
+
+                    // Also write to DB as fallback for HTTP-polling clients
                     $this->Signaling_model->save([
                         'transmission_id' => $tx_id,
                         'from_user_id'    => $me,
-                        'to_user_id'      => (int) $tx->receiver_id,
+                        'to_user_id'      => $receiver_id,
                         'message_type'    => 'hang_up',
                         'payload'         => '{}',
                     ]);
@@ -286,12 +363,12 @@ class Api extends CI_Controller {
 
                 $this->Transmission_model->set_audio($tx_id, $rel_path);
 
-                // Finalise the pending placeholder card.
+                // Finalise the pending placeholder card
                 $pending = $this->Voice_message_model->get_by_transmission($tx_id);
                 if ($pending) {
                     $this->Voice_message_model->finalize($tx_id, $rel_path, $duration);
                 } else {
-                    // Backward-compatible fallback if a placeholder was not created.
+                    // Backward-compatible fallback if a placeholder was not created
                     $this->Voice_message_model->create([
                         'transmission_id' => $tx_id,
                         'conversation_id' => (int) $tx->conversation_id,
@@ -303,10 +380,18 @@ class Api extends CI_Controller {
                     ]);
                 }
 
+                // Notify both parties that a new voice card is ready — replaces
+                // the 3-second card-refresh polling loop on the receiver.
+                $conv_id     = (int) $tx->conversation_id;
+                $receiver_id = (int) $tx->receiver_id;
+                $push_data   = ['conversation_id' => $conv_id, 'transmission_id' => $tx_id];
+                $this->_ws_push($receiver_id, 'voice_card_ready', $push_data);
+                $this->_ws_push($me,          'voice_card_ready', $push_data);
+
                 $this->_json(['success' => true, 'file_path' => $rel_path]);
                 break;
 
-            // ---- poll (receiver checks for incoming live transmission) ----
+            // ---- poll (HTTP fallback for when WS is unavailable) ----
             case 'poll':
                 $this->User_model->mark_stale_offline();
                 $incoming = $this->Transmission_model->get_incoming_for_receiver($me);
@@ -324,10 +409,12 @@ class Api extends CI_Controller {
 
     // ----------------------------------------------------------------
     // POST /api/signaling/send
-    // Stores a WebRTC signaling message (offer / answer / ICE / hang_up).
+    //   HTTP fallback for WebRTC signaling when the WS server is unavailable.
+    //   When WS is connected, clients send signals via the WS "signaling" event
+    //   and never call this endpoint.
     // ----------------------------------------------------------------
     // POST /api/signaling/poll
-    // Returns and consumes pending signaling messages for the caller.
+    //   HTTP fallback: returns and consumes pending signaling messages.
     // ----------------------------------------------------------------
     public function signaling($action = '')
     {
@@ -337,8 +424,8 @@ class Api extends CI_Controller {
         switch ($action) {
 
             case 'send':
-                $tx_id = (int) $this->_body('transmission_id');
-                $type  = $this->_body('message_type');
+                $tx_id   = (int)   $this->_body('transmission_id');
+                $type    = (string) $this->_body('message_type');
                 $payload = $this->_body('payload');
 
                 if (!$tx_id || !$type) {
@@ -353,6 +440,14 @@ class Api extends CI_Controller {
 
                 // Route to the other party
                 $to = ((int) $tx->sender_id === $me) ? (int) $tx->receiver_id : (int) $tx->sender_id;
+
+                // Try WS push first; also write to DB so HTTP-polling path can consume it
+                $this->_ws_push($to, 'signaling', [
+                    'transmission_id' => $tx_id,
+                    'from_user_id'    => $me,
+                    'type'            => $type,
+                    'payload'         => is_string($payload) ? $payload : json_encode($payload),
+                ]);
 
                 $this->Signaling_model->save([
                     'transmission_id' => $tx_id,
@@ -394,7 +489,9 @@ class Api extends CI_Controller {
 
     // ----------------------------------------------------------------
     // POST /api/heartbeat
-    // Client pings every ~1 s while the tab is active to keep is_online = 1.
+    // HTTP fallback heartbeat — used when the WebSocket server is unavailable.
+    // When WS is connected, the WS client sends a "heartbeat" event every 5 s
+    // and this endpoint is not called.
     // ----------------------------------------------------------------
     public function heartbeat()
     {
@@ -440,7 +537,7 @@ class Api extends CI_Controller {
             'wav'   => 'audio/wav',
             default => 'application/octet-stream',
         };
-        $size = filesize($path);
+        $size  = filesize($path);
         $start = 0;
         $end   = $size - 1;
 
@@ -478,7 +575,7 @@ class Api extends CI_Controller {
             fseek($fp, $start);
             $remaining = $length;
             while ($remaining > 0 && !feof($fp)) {
-                $read = min(8192, $remaining);
+                $read  = min(8192, $remaining);
                 $chunk = fread($fp, $read);
                 if ($chunk === false || $chunk === '') {
                     break;

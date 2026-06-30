@@ -3,10 +3,14 @@
  *
  * Roles:
  *  SENDER   – calls startTransmission(), records + streams audio to peer
- *  RECEIVER – detected via poll, auto-connects and plays incoming stream
+ *  RECEIVER – detected via WS push (or HTTP poll fallback), auto-connects and plays incoming stream
  *
- * Signaling is done via polling (HTTP POST) since CI3 has no native WebSocket.
- * Poll interval: 1 000 ms while a transmission is active.
+ * Signaling strategy:
+ *  Primary:  WebSocket relay via the global `ws` (WsClient) object.
+ *            Signals are relayed by the WS server in real time — zero DB writes,
+ *            sub-millisecond delivery vs. the old 1-second HTTP poll.
+ *  Fallback: HTTP POST to /api/signaling/send  +  poll /api/signaling/poll every 1 s.
+ *            Activated automatically when `ws` is not connected.
  */
 'use strict';
 
@@ -21,7 +25,9 @@ class VoiceTransmission {
         this.isTransmitting = false;  // I am the SENDER
         this.isReceiving    = false;  // I am the RECEIVER
         this.startTime      = null;
-        this._sigPoll       = null;   // signaling poll interval handle
+        this._sigPoll       = null;   // HTTP polling interval handle (fallback only)
+        this._sigHandler    = null;   // WS event listener handle
+        this._otherUserId   = null;   // peer user ID (for WS signaling target)
         this._icePending    = [];     // buffered ICE candidates until remote desc set
         this._remoteDescSet = false;
         this._onStopped     = null;   // callback when remote hangs up
@@ -50,6 +56,7 @@ class VoiceTransmission {
         // Reset signaling state for a fresh transmission session.
         this._remoteDescSet = false;
         this._icePending    = [];
+        this._otherUserId   = parseInt(receiverId, 10);
 
         // 1. Ask server to create the transmission record
         const res = await api('transmission/start', {
@@ -91,17 +98,35 @@ class VoiceTransmission {
 
         this.isTransmitting = false;
 
-        // Tell server
+        // Tell server (server pushes hang_up to receiver via WS or writes to DB fallback)
         await api('transmission/stop', { transmission_id: this.transmissionId });
 
         // Stop recording and upload
         await this._stopRecordingAndUpload();
 
-        // Close peer connection
+        // Close peer connection and stop signaling
         this._destroyPC();
-
-        // Stop signaling poll
         this._stopSigPoll();
+    }
+
+    /**
+     * Force-stop all activity immediately without waiting for graceful teardown.
+     * Used during network loss — calls are best-effort, errors are suppressed.
+     */
+    async forceStop () {
+        if (this.isTransmitting) {
+            this.isTransmitting = false;
+            // Best-effort: server may not receive this if network is down
+            api('transmission/stop', { transmission_id: this.transmissionId }).catch(() => {});
+            // Upload whatever was recorded — may succeed when connectivity returns
+            await this._stopRecordingAndUpload().catch(() => {});
+            this._destroyPC();
+            this._stopSigPoll();
+        }
+        if (this.isReceiving) {
+            // Treat it as a remote hang-up — clean up receive state
+            await this._handleRemoteHangUp();
+        }
     }
 
     // ================================================================
@@ -109,7 +134,8 @@ class VoiceTransmission {
     // ================================================================
 
     /**
-     * Called by the app when the incoming-transmission poll returns a live tx.
+     * Called by the app when an incoming live transmission is pushed via WS
+     * (or detected by HTTP poll fallback).
      * Returns true if we started receiving, false if busy.
      */
     async acceptIncoming (transmission) {
@@ -119,6 +145,7 @@ class VoiceTransmission {
 
         this.isReceiving    = true;
         this.transmissionId = parseInt(transmission.id, 10);
+        this._otherUserId   = parseInt(transmission.sender_id, 10);
         this._remoteDescSet = false;
         this._icePending    = [];
 
@@ -145,11 +172,7 @@ class VoiceTransmission {
 
         this.pc.onicecandidate = e => {
             if (e.candidate) {
-                api('signaling/send', {
-                    transmission_id: this.transmissionId,
-                    message_type:    'ice_candidate',
-                    payload:         JSON.stringify(e.candidate),
-                });
+                this._sendSignal('ice_candidate', JSON.stringify(e.candidate));
             }
         };
 
@@ -162,13 +185,10 @@ class VoiceTransmission {
         const offer = await this.pc.createOffer({ offerToReceiveAudio: false });
         await this.pc.setLocalDescription(offer);
 
-        await api('signaling/send', {
-            transmission_id: this.transmissionId,
-            message_type:    'offer',
-            payload:         JSON.stringify(offer),
-        });
+        // Send offer to receiver via WS (or HTTP fallback)
+        this._sendSignal('offer', JSON.stringify(offer));
 
-        // Poll for answer
+        // Start listening for answer / ICE from receiver
         this._startSigPoll();
     }
 
@@ -191,11 +211,7 @@ class VoiceTransmission {
 
         this.pc.onicecandidate = e => {
             if (e.candidate) {
-                api('signaling/send', {
-                    transmission_id: this.transmissionId,
-                    message_type:    'ice_candidate',
-                    payload:         JSON.stringify(e.candidate),
-                });
+                this._sendSignal('ice_candidate', JSON.stringify(e.candidate));
             }
         };
 
@@ -268,16 +284,76 @@ class VoiceTransmission {
     }
 
     // ================================================================
-    // PRIVATE — signaling poll
+    // PRIVATE — signaling (WS primary, HTTP fallback)
     // ================================================================
 
+    /**
+     * Send a signaling message to the peer.
+     *
+     * Uses WebSocket when connected — direct relay via WS server, no DB write.
+     * Falls back to HTTP POST when WS is not connected.
+     */
+    _sendSignal (type, payload) {
+        const wsGlobal = (typeof ws !== 'undefined') ? ws : null;
+        if (wsGlobal && wsGlobal.isConnected && this._otherUserId) {
+            wsGlobal.send('signaling', {
+                transmission_id: this.transmissionId,
+                to_user_id:      this._otherUserId,
+                type,
+                payload,
+            });
+        } else {
+            // HTTP fallback — server writes to signaling_messages for polling
+            api('signaling/send', {
+                transmission_id: this.transmissionId,
+                message_type:    type,
+                payload,
+            }).catch(() => {});
+        }
+    }
+
+    /**
+     * Start listening for incoming signaling messages.
+     *
+     * Primary path: register a listener on the global WS client's 'signaling' event.
+     * Fallback:     start a 1-second HTTP poll to /api/signaling/poll.
+     */
     _startSigPoll () {
+        const wsGlobal = (typeof ws !== 'undefined') ? ws : null;
+        if (wsGlobal && wsGlobal.isConnected) {
+            // WS path — already registered in constructor; just ensure one handler
+            if (this._sigHandler) return;
+            this._sigHandler = (data) => {
+                if (!data || parseInt(data.transmission_id, 10) !== this.transmissionId) return;
+                // Normalise WS format → _handleSignalingMsg format
+                this._handleSignalingMsg({
+                    message_type: data.type,
+                    payload:      typeof data.payload === 'string'
+                        ? data.payload
+                        : JSON.stringify(data.payload),
+                    from_user_id: data.from_user_id,
+                });
+            };
+            wsGlobal.on('signaling', this._sigHandler);
+            return;
+        }
+        // HTTP polling fallback
         if (this._sigPoll) return;
         this._sigPoll = setInterval(() => this._pollSignaling(), 1000);
     }
 
     _stopSigPoll () {
-        if (this._sigPoll) { clearInterval(this._sigPoll); this._sigPoll = null; }
+        // Clean up WS listener
+        const wsGlobal = (typeof ws !== 'undefined') ? ws : null;
+        if (this._sigHandler && wsGlobal) {
+            wsGlobal.off('signaling', this._sigHandler);
+            this._sigHandler = null;
+        }
+        // Clean up HTTP poll
+        if (this._sigPoll) {
+            clearInterval(this._sigPoll);
+            this._sigPoll = null;
+        }
     }
 
     async _pollSignaling () {
@@ -314,11 +390,8 @@ class VoiceTransmission {
                     this._remoteDescSet = true;
                     const answer = await this.pc.createAnswer();
                     await this.pc.setLocalDescription(answer);
-                    await api('signaling/send', {
-                        transmission_id: this.transmissionId,
-                        message_type:    'answer',
-                        payload:         JSON.stringify(answer),
-                    });
+                    // Send answer back to sender
+                    this._sendSignal('answer', JSON.stringify(answer));
                     await this._flushIcePending();
                 }
                 break;

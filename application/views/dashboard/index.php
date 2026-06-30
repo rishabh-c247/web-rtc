@@ -7,6 +7,19 @@
     Click anywhere to enable audio autoplay for incoming transmissions.
 </div>
 
+<!-- Network reconnecting overlay — shown on WS disconnect, blocks all UI interaction -->
+<div id="reconnect-overlay" class="reconnect-overlay d-none"
+     aria-live="assertive" aria-atomic="true" role="alert">
+    <div class="reconnect-card">
+        <div class="spinner-border text-primary mb-3" style="width:2.5rem;height:2.5rem;" role="status">
+            <span class="visually-hidden">Reconnecting…</span>
+        </div>
+        <div class="reconnect-title">Connection Lost</div>
+        <div class="reconnect-sub">Reconnecting to the server…</div>
+        <div class="reconnect-timer" id="reconnect-timer">00:00</div>
+    </div>
+</div>
+
 <!-- ===================== APP SHELL ===================== -->
 <div class="app-shell">
 

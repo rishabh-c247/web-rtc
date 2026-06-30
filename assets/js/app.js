@@ -4,8 +4,12 @@
  * Responsibilities:
  *  - Load & render conversations / voice cards
  *  - Handle Transmit / Stop button
- *  - Poll for incoming live transmissions (receiver side)
- *  - Heartbeat for presence
+ *  - WebSocket connection management and event dispatch
+ *  - Fallback HTTP polling when WebSocket is unavailable
+ *  - Presence updates (pushed via WS; pulled via HTTP fallback)
+ *  - Incoming transmission notifications (pushed via WS; polled as fallback)
+ *  - Heartbeat for presence (via WS; HTTP as fallback)
+ *  - Network loss detection and reconnecting overlay
  *  - Build voice card HTML
  */
 'use strict';
@@ -14,17 +18,20 @@
 const vt = new VoiceTransmission();
 
 // ── State
-let activeConvId     = null;   // currently selected conversation id
-let activeReceiverId = null;   // the other user in the selected conversation
-let currentIncomingTxId = null; // transmission id we are currently receiving
-let cardRefreshInterval  = null;
-let incomingPollInterval = null;
-let txPopupTimer         = null;
-let txPopupStartedAt     = null;
-let heartbeatInterval    = null;
+let activeConvId        = null;   // currently selected conversation id
+let activeReceiverId    = null;   // the other user in the selected conversation
+let currentIncomingTxId = null;   // transmission id we are currently receiving
+let cardRefreshInterval = null;   // used only in HTTP fallback mode
+let txPopupTimer        = null;
+let txPopupStartedAt    = null;
+let heartbeatInterval   = null;   // HTTP fallback heartbeat interval
+let ws                  = null;   // WsClient instance
+let wsEverConnected     = false;  // true after first successful WS auth
 
-const HEARTBEAT_MS        = 1000;
-const PRESENCE_REFRESH_MS = 2000;
+// ── Network / reconnect overlay state
+let isOfflineOverlayVisible = false;
+let reconnectStartTime      = null;
+let reconnectTimerInterval  = null;
 
 // ── DOM refs
 const btnTransmit   = document.getElementById('btn-transmit');
@@ -48,12 +55,272 @@ const txPopupModeEl = document.getElementById('tx-popup-mode');
 document.addEventListener('DOMContentLoaded', () => {
     unlockAutoplay();
     loadConversations();
-    startIncomingPoll();
-    startHeartbeat();
-    startPresenceRefresh();
     wireNewConvModal();
     wireVoiceCardAudioBehavior();
+    initWebSocket();           // replaces startHeartbeat + startIncomingPoll + startPresenceRefresh
 });
+
+// ================================================================
+// WebSocket — primary real-time channel
+// ================================================================
+
+/**
+ * Initialise the WebSocket client and register all event handlers.
+ * Falls back to HTTP polling when the WS server is unavailable.
+ */
+function initWebSocket () {
+    ws = new WsClient({
+        url:    WS_URL,
+        userId: CURRENT_USER_ID,
+        token:  SESSION_TOKEN,
+    });
+
+    // ── Connection events ──────────────────────────────────────────
+
+    ws.on('auth_ok', () => {
+        wsEverConnected = true;
+        stopFallbackPolling();
+        if (isOfflineOverlayVisible) {
+            handleReconnected();
+        }
+    });
+
+    ws.on('disconnected', ({ wasAuthed }) => {
+        // Only show the overlay if we were fully connected before — not on first connect attempt
+        if (wsEverConnected && wasAuthed) {
+            handleNetworkLoss();
+        }
+        // Always start fallback polling so the app stays functional during WS outage
+        startFallbackPolling();
+    });
+
+    ws.on('kicked', () => {
+        // Session was invalidated (new login on another device)
+        window.location.href = BASE_URL + 'auth';
+    });
+
+    // ── Presence ───────────────────────────────────────────────────
+
+    /**
+     * Incremental presence update — no full conversation list reload required.
+     * Updates the sidebar item and header status for the affected user.
+     */
+    ws.on('presence_update', ({ user_id, is_online }) => {
+        const userId   = parseInt(user_id, 10);
+        const isOnline = parseInt(is_online, 10) === 1;
+
+        // Update sidebar items
+        convList.querySelectorAll('.conv-item').forEach(el => {
+            if (parseInt(el.dataset.otherId, 10) !== userId) return;
+            const dot = el.querySelector('.status-dot');
+            const sub = el.querySelector('.sub');
+            if (dot) {
+                dot.className = (isOnline ? 'online-dot' : 'offline-dot') + ' status-dot';
+            }
+            if (sub) {
+                sub.textContent = isOnline ? 'Online' : 'Offline';
+            }
+        });
+
+        // Update conversation header if this is the active peer
+        if (activeReceiverId === userId) {
+            convPeerStatus.textContent = isOnline ? 'Online' : 'Offline';
+        }
+    });
+
+    /**
+     * Initial snapshot of who is online — sent by the server right after auth_ok.
+     * Applies the online status to already-rendered sidebar items.
+     */
+    ws.on('presence_snapshot', ({ online_user_ids }) => {
+        const onlineSet = new Set((online_user_ids || []).map(Number));
+        convList.querySelectorAll('.conv-item').forEach(el => {
+            const userId = parseInt(el.dataset.otherId, 10);
+            const isOnline = onlineSet.has(userId);
+            const dot = el.querySelector('.status-dot');
+            const sub = el.querySelector('.sub');
+            if (dot) dot.className = (isOnline ? 'online-dot' : 'offline-dot') + ' status-dot';
+            if (sub) sub.textContent = isOnline ? 'Online' : 'Offline';
+        });
+    });
+
+    // ── Incoming transmission ──────────────────────────────────────
+
+    ws.on('transmission_incoming', async (data) => {
+        if (!data) return;
+        const txId = parseInt(data.id, 10);
+        if (txId === currentIncomingTxId || vt.isBusy()) return;
+
+        currentIncomingTxId = txId;
+
+        vt._onStopped = () => {
+            currentIncomingTxId = null;
+            liveIndicator.classList.add('d-none');
+            updateTransmitButton();
+            if (activeConvId) loadVoiceCards(activeConvId);
+        };
+
+        const accepted = await vt.acceptIncoming(data);
+        if (accepted) {
+            liveIndicator.classList.remove('d-none');
+            updateTransmitButton();
+
+            const convId     = parseInt(data.conversation_id, 10);
+            const senderId   = parseInt(data.sender_id, 10);
+            const senderName = `${data.sender_first} ${data.sender_last}`;
+            if (activeConvId !== convId) {
+                selectConversation(convId, senderId, senderName);
+            }
+        }
+    });
+
+    ws.on('transmission_pending', () => {
+        // A non-live transmission was just created for us; refresh cards to show the pending card
+        if (activeConvId) loadVoiceCards(activeConvId);
+    });
+
+    // ── Voice card notification ────────────────────────────────────
+
+    ws.on('voice_card_ready', ({ conversation_id }) => {
+        const convId = parseInt(conversation_id, 10);
+        if (activeConvId === convId) {
+            loadVoiceCards(convId);
+        }
+    });
+
+    // ── Heartbeat response ─────────────────────────────────────────
+
+    ws.on('pong', () => {
+        // WS heartbeat successful — nothing needed, ws-client handles everything
+    });
+
+    ws.connect();
+}
+
+// ── Fallback HTTP polling ─────────────────────────────────────────────────────
+
+/**
+ * Start HTTP polling — activated when the WS connection drops.
+ * Maintains functionality while WS reconnects.
+ */
+function startFallbackPolling () {
+    // Heartbeat (every 3s — less aggressive than the old 1s, WS is primary)
+    if (!heartbeatInterval) {
+        sendHeartbeat();
+        heartbeatInterval = setInterval(sendHeartbeat, 3000);
+        document.addEventListener('visibilitychange', _onVisibilityChange);
+        window.addEventListener('pagehide', _onPageHide);
+    }
+
+    // Card refresh for open conversation (every 5s — WS events are primary)
+    if (!cardRefreshInterval && activeConvId) {
+        cardRefreshInterval = setInterval(() => {
+            loadVoiceCards(activeConvId);
+            loadConversations();           // presence fallback
+            refreshUserPickerIfOpen();
+        }, 5000);
+    }
+}
+
+/**
+ * Stop HTTP polling — called when WS reconnects successfully.
+ */
+function stopFallbackPolling () {
+    if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+        document.removeEventListener('visibilitychange', _onVisibilityChange);
+    }
+    if (cardRefreshInterval) {
+        clearInterval(cardRefreshInterval);
+        cardRefreshInterval = null;
+    }
+}
+
+function _onVisibilityChange () {
+    if (!document.hidden) {
+        clearInterval(heartbeatInterval);
+        sendHeartbeat();
+        heartbeatInterval = setInterval(sendHeartbeat, 3000);
+    }
+}
+
+function _onPageHide (e) {
+    if (!e.persisted) sendOfflineBeacon();
+}
+
+// ── Heartbeat (HTTP fallback only) ────────────────────────────────────────────
+
+function sendHeartbeat () {
+    // When WS is connected the WS client sends a heartbeat every 5s.
+    // This HTTP version only runs as a fallback while WS is unavailable.
+    if (ws && ws.isConnected) return;
+    api('heartbeat', {}).catch(() => {});
+}
+
+function sendOfflineBeacon () {
+    const blob = new Blob(['{}'], { type: 'application/json' });
+    navigator.sendBeacon(BASE_URL + 'api/offline', blob);
+}
+
+// ── Network loss / reconnecting overlay ───────────────────────────────────────
+
+/**
+ * Called when the WS connection drops after being established.
+ * Shows the blocking reconnecting overlay and aborts any active transmission.
+ */
+async function handleNetworkLoss () {
+    if (isOfflineOverlayVisible) return;
+    showReconnectingOverlay();
+
+    // Abort any active WebRTC transmission immediately
+    if (vt.isBusy()) {
+        await vt.forceStop();
+        liveIndicator.classList.add('d-none');
+        removeLiveCard();
+        hideTxPopup();
+        updateTransmitButton();
+    }
+}
+
+/**
+ * Called when the WS reconnects and auth_ok is received.
+ */
+function handleReconnected () {
+    hideReconnectingOverlay();
+    // Refresh state that may have changed during the outage
+    loadConversations();
+    if (activeConvId) loadVoiceCards(activeConvId);
+}
+
+function showReconnectingOverlay () {
+    isOfflineOverlayVisible = true;
+    reconnectStartTime      = Date.now();
+    const overlay = document.getElementById('reconnect-overlay');
+    if (overlay) overlay.classList.remove('d-none');
+
+    if (reconnectTimerInterval) clearInterval(reconnectTimerInterval);
+    reconnectTimerInterval = setInterval(() => {
+        const el = document.getElementById('reconnect-timer');
+        if (el && reconnectStartTime) {
+            const secs = Math.floor((Date.now() - reconnectStartTime) / 1000);
+            const m    = Math.floor(secs / 60);
+            const s    = secs % 60;
+            el.textContent = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+        }
+    }, 1000);
+}
+
+function hideReconnectingOverlay () {
+    isOfflineOverlayVisible = false;
+    reconnectStartTime      = null;
+    if (reconnectTimerInterval) {
+        clearInterval(reconnectTimerInterval);
+        reconnectTimerInterval = null;
+    }
+    const overlay = document.getElementById('reconnect-overlay');
+    if (overlay) overlay.classList.add('d-none');
+}
 
 // ================================================================
 // Autoplay unlock
@@ -156,14 +423,16 @@ function selectConversation (convId, otherId, otherName) {
     // Enable transmit if not busy
     updateTransmitButton();
 
-    // Load voice cards
+    // Load voice cards immediately
     loadVoiceCards(convId);
 
-    // Refresh cards every 3 s while this conversation is open
-    if (cardRefreshInterval) clearInterval(cardRefreshInterval);
-    cardRefreshInterval = setInterval(() => {
-        loadVoiceCards(convId);
-    }, 3000);
+    // Determine peer status from sidebar (WS presence keeps this live)
+    convList.querySelectorAll('.conv-item').forEach(el => {
+        if (parseInt(el.dataset.convId) === convId) {
+            const sub = el.querySelector('.sub');
+            convPeerStatus.textContent = sub ? sub.textContent : '';
+        }
+    });
 }
 
 // ================================================================
@@ -202,7 +471,7 @@ function renderVoiceCards (messages) {
         voiceCardsEl.innerHTML = html;
     }
 
-    // Keep the temporary transmitting card visible even while polling refreshes.
+    // Keep the temporary transmitting card visible even while cards refresh.
     if (vt.isTransmitting) addLiveCard();
 
     restorePlayback(playingState);
@@ -448,6 +717,8 @@ async function handleStop () {
     hideTxPopup();
 
     // Refresh cards after a short delay for upload to finish
+    // WS voice_card_ready event will also trigger this, but a local timeout
+    // ensures the sender's view updates even if WS push lags.
     setTimeout(() => loadVoiceCards(activeConvId), 1500);
 }
 
@@ -518,56 +789,6 @@ function hideTxPopup () {
         txPopupTimer = null;
     }
     txPopupStartedAt = null;
-}
-
-// ================================================================
-// Incoming transmission poll (RECEIVER side)
-// ================================================================
-function startIncomingPoll () {
-    if (incomingPollInterval) return;
-    incomingPollInterval = setInterval(pollIncoming, 1500);
-}
-
-async function pollIncoming () {
-    try {
-        const res = await api('transmission/poll', {});
-
-        // ---- Live incoming ----
-        const inc = res.incoming;
-        if (inc && parseInt(inc.id) !== currentIncomingTxId && !vt.isBusy()) {
-            currentIncomingTxId = parseInt(inc.id);
-
-            vt._onStopped = () => {
-                currentIncomingTxId = null;
-                liveIndicator.classList.add('d-none');
-                updateTransmitButton();
-                if (activeConvId) loadVoiceCards(activeConvId);
-            };
-
-            const accepted = await vt.acceptIncoming(inc);
-            if (accepted) {
-                liveIndicator.classList.remove('d-none');
-                updateTransmitButton();
-
-                // Switch to the conversation where this came from
-                const convId      = parseInt(inc.conversation_id);
-                const senderId    = parseInt(inc.sender_id);
-                const senderName  = `${inc.sender_first} ${inc.sender_last}`;
-                if (activeConvId !== convId) {
-                    selectConversation(convId, senderId, senderName);
-                }
-            }
-        }
-
-        // ---- Pending (non-live) incomings for card refresh ----
-        if (Array.isArray(res.pending) && res.pending.length > 0 && activeConvId) {
-            // Silently refresh cards so the disabled pending cards appear
-            loadVoiceCards(activeConvId);
-        }
-
-    } catch (e) {
-        // Network hiccup — ignore
-    }
 }
 
 // ================================================================
@@ -643,49 +864,6 @@ if (btnPopupStop) {
             await handleStop();
         }
     });
-}
-
-// ================================================================
-// Heartbeat (keep is_online alive while the page is open)
-// ================================================================
-function sendHeartbeat () {
-    api('heartbeat', {}).catch(() => {});
-}
-
-function sendOfflineBeacon () {
-    const blob = new Blob(['{}'], { type: 'application/json' });
-    navigator.sendBeacon(BASE_URL + 'api/offline', blob);
-}
-
-function startHeartbeat () {
-    sendHeartbeat();
-    heartbeatInterval = setInterval(sendHeartbeat, HEARTBEAT_MS);
-
-    // Browsers throttle setInterval in background/minimized tabs (sometimes to
-    // once per minute). When the tab regains focus we tear down the stale,
-    // out-of-sync interval and restart it immediately so last_seen is updated
-    // the instant the user returns — with no waiting for the next throttled tick.
-    document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) {
-            clearInterval(heartbeatInterval);
-            sendHeartbeat();
-            heartbeatInterval = setInterval(sendHeartbeat, HEARTBEAT_MS);
-        }
-    });
-
-    // Mark offline only when the page is actually closed or navigated away from.
-    window.addEventListener('pagehide', (e) => {
-        if (!e.persisted) {
-            sendOfflineBeacon();
-        }
-    });
-}
-
-function startPresenceRefresh () {
-    setInterval(() => {
-        loadConversations();
-        refreshUserPickerIfOpen();
-    }, PRESENCE_REFRESH_MS);
 }
 
 // ================================================================

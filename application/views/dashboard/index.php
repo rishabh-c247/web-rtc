@@ -11,7 +11,7 @@
 <div id="reconnect-overlay" class="reconnect-overlay d-none"
      aria-live="assertive" aria-atomic="true" role="alert">
     <div class="reconnect-card">
-        <div class="spinner-border text-primary mb-3" style="width:2.5rem;height:2.5rem;" role="status">
+        <div class="spinner-border text-primary mb-3 spinner-reconnect" role="status">
             <span class="visually-hidden">Reconnecting…</span>
         </div>
         <div class="reconnect-title">Connection Lost</div>
@@ -21,16 +21,16 @@
 </div>
 
 <!-- ===================== APP SHELL ===================== -->
-<div class="app-shell">
+<div class="app-shell" id="app-shell">
 
     <!-- ====== LEFT SIDEBAR ====== -->
     <aside class="sidebar">
         <div class="sidebar-header">
             <div class="d-flex align-items-center gap-2">
-                <i class="bi bi-broadcast-pin text-purple" style="font-size:1.4rem;"></i>
+                <i class="bi bi-broadcast-pin text-purple" style="font-size:1.35rem;"></i>
                 <span class="fw-bold fs-5">VoiceLink</span>
             </div>
-            <div class="d-flex align-items-center gap-2 mt-1">
+            <div class="d-flex align-items-center gap-2 mt-2">
                 <span class="online-dot"></span>
                 <small class="text-muted-light"><?= htmlspecialchars($this->session->userdata('first_name') . ' ' . $this->session->userdata('last_name')) ?></small>
             </div>
@@ -38,15 +38,15 @@
 
         <div class="sidebar-section-title">
             Conversations
-            <button class="btn-icon-sm ms-auto" id="btn-new-conv" title="New conversation">
+            <button class="btn-icon-sm ms-auto" id="btn-new-conv" title="New conversation" aria-label="New conversation">
                 <i class="bi bi-plus-lg"></i>
             </button>
         </div>
 
         <div id="conv-list" class="conv-list">
             <div class="conv-placeholder">
-                <i class="bi bi-chat-dots" style="font-size:1.8rem;opacity:0.3;"></i>
-                <div class="mt-1" style="font-size:0.8rem;opacity:0.4;">No conversations yet</div>
+                <i class="bi bi-chat-dots icon-muted"></i>
+                <div class="mt-2 text-faint">No conversations yet</div>
             </div>
         </div>
 
@@ -62,9 +62,9 @@
 
         <!-- Empty state -->
         <div id="empty-state" class="empty-state">
-            <i class="bi bi-broadcast" style="font-size:4rem;opacity:0.2;"></i>
-            <div class="mt-3 fw-semibold" style="opacity:0.4;">Select a conversation to start</div>
-            <div style="font-size:0.82rem;opacity:0.3;">or click <strong>+</strong> to create one</div>
+            <i class="bi bi-broadcast icon-muted-lg"></i>
+            <div class="mt-3 fw-semibold text-faint">Select a conversation to start</div>
+            <div class="hint">or click <strong>+</strong> to create one</div>
         </div>
 
         <!-- Active conversation panel -->
@@ -72,7 +72,10 @@
 
             <!-- Top bar -->
             <div class="conv-topbar">
-                <div>
+                <button type="button" class="btn-mobile-back" id="btn-mobile-back" aria-label="Back to conversations">
+                    <i class="bi bi-arrow-left"></i>
+                </button>
+                <div class="conv-topbar-info">
                     <div class="fw-semibold" id="conv-peer-name">—</div>
                     <small id="conv-peer-status" class="text-muted-light">—</small>
                 </div>
@@ -83,7 +86,7 @@
 
             <!-- Voice cards area -->
             <div id="voice-cards" class="voice-cards">
-                <div class="text-center mt-4" style="opacity:0.3;font-size:0.85rem;">
+                <div class="text-center mt-4 text-faint">
                     No voice messages yet
                 </div>
             </div>
@@ -125,17 +128,17 @@
 <!-- ===== NEW CONVERSATION MODAL ===== -->
 <div class="modal fade" id="modal-new-conv" tabindex="-1">
     <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content modal-dark">
-            <div class="modal-header border-0">
+        <div class="modal-content modal-app">
+            <div class="modal-header">
                 <h5 class="modal-title">
                     <i class="bi bi-person-plus me-2 text-purple"></i>New Conversation
                 </h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
                 <p class="text-muted-light small mb-3">Select a user to start a conversation with.</p>
                 <div id="user-picker" class="user-picker">
-                    <div class="text-center py-3" style="opacity:0.4;">
+                    <div class="text-center py-3 text-faint">
                         <div class="spinner-border spinner-border-sm me-2"></div> Loading users…
                     </div>
                 </div>

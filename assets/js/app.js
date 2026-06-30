@@ -48,6 +48,19 @@ const txPopupStatus = document.getElementById('tx-popup-status');
 const txPopupTimerEl= document.getElementById('tx-popup-timer');
 const btnPopupStop  = document.getElementById('btn-popup-stop');
 const txPopupModeEl = document.getElementById('tx-popup-mode');
+const appShell      = document.getElementById('app-shell');
+const btnMobileBack = document.getElementById('btn-mobile-back');
+
+function wireMobileNav () {
+    if (!btnMobileBack || !appShell) return;
+    btnMobileBack.addEventListener('click', () => {
+        appShell.classList.remove('conv-open');
+    });
+}
+
+function openConvPanel () {
+    if (appShell) appShell.classList.add('conv-open');
+}
 
 // ================================================================
 // Boot
@@ -57,6 +70,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadConversations();
     wireNewConvModal();
     wireVoiceCardAudioBehavior();
+    wireMobileNav();
     initWebSocket();           // replaces startHeartbeat + startIncomingPoll + startPresenceRefresh
 });
 
@@ -377,8 +391,8 @@ function renderConvList (convs) {
     if (!convs.length) {
         convList.innerHTML = `
             <div class="conv-placeholder">
-                <i class="bi bi-chat-dots" style="font-size:1.8rem;opacity:0.3;"></i>
-                <div class="mt-1" style="font-size:0.8rem;opacity:0.4;">No conversations yet</div>
+                <i class="bi bi-chat-dots icon-muted"></i>
+                <div class="mt-2 text-faint">No conversations yet</div>
             </div>`;
         return;
     }
@@ -411,6 +425,7 @@ function selectConversation (convId, otherId, otherName) {
 
     convPanel.classList.remove('d-none');
     emptyState.classList.add('d-none');
+    openConvPanel();
 
     convPeerName.textContent   = otherName;
     convPeerStatus.textContent = 'Loading…';
@@ -457,7 +472,7 @@ function renderVoiceCards (messages) {
 
     if (!messages.length) {
         voiceCardsEl.innerHTML = `
-            <div class="text-center mt-4" style="opacity:0.3;font-size:0.85rem;">
+            <div class="text-center mt-4 text-faint">
                 No voice messages yet
             </div>`;
         if (vt.isTransmitting) addLiveCard();
@@ -499,7 +514,7 @@ function buildCard (m) {
             <div class="card-bubble">
                 <div class="card-sender">${senderName}</div>
                 <div class="pending-audio-placeholder">
-                    <div class="spinner-border spinner-border-sm text-warning" style="width:14px;height:14px;"></div>
+                    <div class="spinner-border spinner-border-sm text-warning spinner-tiny"></div>
                     <span>Recording in progress…</span>
                 </div>
                 <div class="card-meta">
@@ -537,7 +552,7 @@ function buildCard (m) {
                       data-message-id="${m.id}" data-audio-id="${m.id}"
                       data-expected-duration="${durationSecs > 0 ? durationSecs : ''}"></audio>
            </div>`
-        : `<div class="text-muted-light" style="font-size:0.78rem;">
+        : `<div class="text-muted-light small">
                <i class="bi bi-exclamation-circle me-1"></i>Audio unavailable
            </div>`;
 
@@ -739,7 +754,7 @@ function addLiveCard () {
     div.className = 'voice-card outgoing live-card';
     div.innerHTML = `
         <div class="card-bubble">
-            <div class="card-sender">You <span class="live-indicator d-inline-flex ms-1" style="font-size:0.65rem;padding:0.1rem 0.45rem;">
+            <div class="card-sender">You <span class="live-indicator compact d-inline-flex ms-1">
                 <span class="live-dot"></span> LIVE
             </span></div>
             <div class="waveform-bars mt-1">
@@ -800,7 +815,7 @@ function wireNewConvModal () {
     const picker   = document.getElementById('user-picker');
 
     btnNew.addEventListener('click', async () => {
-        picker.innerHTML = `<div class="text-center py-3" style="opacity:0.4;">
+        picker.innerHTML = `<div class="text-center py-3 text-faint">
             <div class="spinner-border spinner-border-sm me-2"></div> Loading users…
         </div>`;
         modal.show();
@@ -816,7 +831,7 @@ async function renderUserPicker (pickerEl) {
     const users = data.users || [];
 
     if (!users.length) {
-        picker.innerHTML = `<div class="text-center py-3" style="opacity:0.4;">
+        picker.innerHTML = `<div class="text-center py-3 text-faint">
             No other users have joined yet.
         </div>`;
         return;
@@ -828,8 +843,8 @@ async function renderUserPicker (pickerEl) {
              data-name="${esc(u.first_name + ' ' + u.last_name)}">
             <div class="user-pick-avatar">${initials(u.first_name, u.last_name)}</div>
             <div>
-                <div style="font-weight:600;">${esc(u.first_name)} ${esc(u.last_name)}</div>
-                <small style="color:var(--text-muted);">
+                <div class="user-pick-name">${esc(u.first_name)} ${esc(u.last_name)}</div>
+                <small class="text-muted-light">
                     ${isUserOnline(u.is_online)
                         ? '<span class="online-dot me-1"></span>Online'
                         : '<span class="offline-dot me-1"></span>Offline'}
